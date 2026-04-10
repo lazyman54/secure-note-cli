@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${BASH_SOURCE+set}" == "set" && ${#BASH_SOURCE[@]} -gt 0 ]]; then
-  SOURCE="${BASH_SOURCE[0]}"
-else
-  SOURCE="$0"
-fi
+SOURCE="${BASH_SOURCE:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 PREFIX="${INSTALL_PREFIX:-$HOME/.local}"
 BIN_DIR="$PREFIX/bin"
