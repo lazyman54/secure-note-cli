@@ -10,6 +10,7 @@
 - `list`：输入加密密钥后列出所有关键词和对应用户名
 - `delete`：按关键词删除一条记录
 - `update`：按关键词只更新用户名或密码（可只传一个字段）
+- `init`：设置默认存储文件路径（以后可不传 `--file`）
 - 每次执行命令都需要手动输入加密密钥
 
 ## 快速开始
@@ -76,6 +77,14 @@ chmod +x ./vault
 
 `~/.secure_note_store.json`
 
+你可以通过 `init` 一次性把默认存储文件改到 git 仓库文件（推荐）：
+
+```bash
+vault init ~/Projects/secure-note-data/store.json --migrate
+```
+
+设置后，`save/get/list/update/delete` 默认会直接使用这个文件。
+
 你也可以指定存储文件路径：
 
 ```bash
@@ -88,6 +97,7 @@ chmod +x ./vault
 ```
 
 > 参数兼容：`--keyword/--username/--password` 仍可用，同时支持短参数 `-k/-u/-p`。
+> 你仍可用 `--file` 临时覆盖默认存储文件。
 
 ## 快捷安装【推荐】
 
@@ -167,6 +177,12 @@ vault doctor
 git clone https://github.com/lazyman54/secure-note-data ~/Projects/secure-note-data
 curl -fsSL "https://raw.githubusercontent.com/lazyman54/secure-note-cli/main/install.sh" | VAULT_REPO="lazyman54/secure-note-cli" bash
 vault sync-pull
+```
+
+建议首次执行：
+
+```bash
+vault init ~/Projects/secure-note-data/store.json
 ```
 
 ## 注意事项

@@ -12,11 +12,14 @@ import subprocess
 import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Dict, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 
 DEFAULT_STORE_PATH = Path.home() / ".secure_note_store.json"
 DEFAULT_SYNC_REPO_PATH = Path.home() / "Projects" / "secure-note-data"
+DEFAULT_INIT_STORE_PATH = DEFAULT_SYNC_REPO_PATH / "store.json"
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "secure-note-cli" / "config.json"
+CONFIG_ENV_KEY = "VAULT_CONFIG_FILE"
 PBKDF2_ITERATIONS = 200_000
 SALT_SIZE = 16
 NONCE_SIZE = 16
@@ -127,6 +130,46 @@ def save_store(path: Path, data: Dict[str, Dict[str, Union[str, int]]]) -> None:
     os.replace(tmp_path, path)
 
 
+def get_config_path() -> Path:
+    env_path = os.environ.get(CONFIG_ENV_KEY, "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return DEFAULT_CONFIG_PATH
+
+
+def load_config() -> Dict[str, str]:
+    config_path = get_config_path()
+    if not config_path.exists():
+        return {}
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"配置文件格式非法: {config_path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"配置文件内容必须是 JSON 对象: {config_path}")
+    return data
+
+
+def save_config(config: Dict[str, str]) -> None:
+    config_path = get_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile("w", delete=False, dir=str(config_path.parent), encoding="utf-8") as tmp:
+        json.dump(config, tmp, ensure_ascii=False, indent=2)
+        tmp.write("\n")
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, config_path)
+
+
+def resolve_store_path(cli_file: Optional[str]) -> Path:
+    if cli_file:
+        return Path(cli_file).expanduser()
+    config = load_config()
+    configured = str(config.get("default_store_file", "")).strip()
+    if configured:
+        return Path(configured).expanduser()
+    return DEFAULT_STORE_PATH
+
+
 def prompt_key(confirm: bool = False) -> str:
     key = getpass.getpass("请输入加密密钥: ")
     if not key:
@@ -177,7 +220,7 @@ def ensure_repo_dir(path: Path) -> None:
 
 
 def command_save(args: argparse.Namespace) -> int:
-    store_path = Path(args.file).expanduser()
+    store_path = resolve_store_path(args.file)
     store = load_store(store_path)
     keyword = resolve_keyword(args.keyword, args.keyword_opt)
     if not keyword:
@@ -206,7 +249,7 @@ def command_save(args: argparse.Namespace) -> int:
 
 
 def command_get(args: argparse.Namespace) -> int:
-    store_path = Path(args.file).expanduser()
+    store_path = resolve_store_path(args.file)
     store = load_store(store_path)
 
     keyword = resolve_keyword(args.keyword, args.keyword_opt)
@@ -236,7 +279,7 @@ def command_get(args: argparse.Namespace) -> int:
 
 
 def command_list(args: argparse.Namespace) -> int:
-    store_path = Path(args.file).expanduser()
+    store_path = resolve_store_path(args.file)
     store = load_store(store_path)
 
     if not store:
@@ -283,7 +326,7 @@ def command_list(args: argparse.Namespace) -> int:
 
 
 def command_delete(args: argparse.Namespace) -> int:
-    store_path = Path(args.file).expanduser()
+    store_path = resolve_store_path(args.file)
     store = load_store(store_path)
     keyword = resolve_keyword(args.keyword, args.keyword_opt)
     if not keyword:
@@ -307,7 +350,7 @@ def command_update(args: argparse.Namespace) -> int:
         print("至少提供 --username 或 --password 其中之一。", file=sys.stderr)
         return 1
 
-    store_path = Path(args.file).expanduser()
+    store_path = resolve_store_path(args.file)
     store = load_store(store_path)
     keyword = resolve_keyword(args.keyword, args.keyword_opt)
     if not keyword:
@@ -356,10 +399,14 @@ def command_sync_pull(args: argparse.Namespace) -> int:
     if not repo_store.exists():
         raise ValueError(f"仓库中未找到存储文件: {repo_store}")
 
-    local_store = Path(args.file).expanduser()
-    local_store.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(repo_store, local_store)
-    print(f"已拉取并更新本地存储文件: {local_store}")
+    local_store = resolve_store_path(args.file)
+    same_store = repo_store.resolve() == local_store.resolve()
+    if same_store:
+        print("本地存储文件与仓库存储文件是同一路径，已完成远端拉取。")
+    else:
+        local_store.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo_store, local_store)
+        print(f"已拉取并更新本地存储文件: {local_store}")
     return 0
 
 
@@ -367,15 +414,19 @@ def command_sync_push(args: argparse.Namespace) -> int:
     repo_path = Path(args.repo).expanduser()
     ensure_repo_dir(repo_path)
 
-    local_store = Path(args.file).expanduser()
+    local_store = resolve_store_path(args.file)
     if not local_store.exists():
         raise ValueError(f"本地存储文件不存在: {local_store}")
 
     run_command(["git", "pull", "--rebase", "origin", "main"], repo_path)
 
     repo_store = repo_path / args.store
-    repo_store.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(local_store, repo_store)
+    same_store = repo_store.resolve() == local_store.resolve()
+    if not same_store:
+        repo_store.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(local_store, repo_store)
+    else:
+        print("本地存储文件与仓库存储文件是同一路径，跳过复制。")
 
     run_command(["git", "add", args.store], repo_path)
 
@@ -398,7 +449,7 @@ def command_sync_push(args: argparse.Namespace) -> int:
 
 def command_doctor(args: argparse.Namespace) -> int:
     repo_path = Path(args.repo).expanduser()
-    local_store = Path(args.file).expanduser()
+    local_store = resolve_store_path(args.file)
     repo_store = repo_path / args.store
 
     ok_count = 0
@@ -477,6 +528,31 @@ def command_doctor(args: argparse.Namespace) -> int:
     return 1 if fail_count > 0 else 0
 
 
+def command_init(args: argparse.Namespace) -> int:
+    target_file = Path(args.file).expanduser() if args.file else DEFAULT_INIT_STORE_PATH
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+
+    current_default = resolve_store_path(None)
+    if args.migrate:
+        if not current_default.exists():
+            raise ValueError(f"当前默认存储文件不存在，无法迁移: {current_default}")
+        if target_file.exists() and not args.force:
+            raise ValueError(f"目标文件已存在，使用 --force 允许覆盖: {target_file}")
+        shutil.copy2(current_default, target_file)
+        print(f"已迁移数据: {current_default} -> {target_file}")
+    elif not target_file.exists():
+        target_file.write_text("{}\n", encoding="utf-8")
+        print(f"已创建新存储文件: {target_file}")
+
+    config = load_config()
+    config["default_store_file"] = str(target_file)
+    save_config(config)
+
+    print(f"已设置默认存储文件: {target_file}")
+    print("之后可直接使用 vault save/get/list/update/delete，无需每次传 --file。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vault",
@@ -484,8 +560,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--file",
-        default=str(DEFAULT_STORE_PATH),
-        help=f"存储文件路径（默认: {DEFAULT_STORE_PATH}）",
+        help=f"存储文件路径（优先于 init 配置；未配置时默认: {DEFAULT_STORE_PATH}）",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -550,6 +625,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_parser.add_argument("--store", default="store.json", help="仓库内存储文件相对路径（默认: store.json）")
     doctor_parser.set_defaults(func=command_doctor)
+
+    init_parser = subparsers.add_parser("init", help="初始化默认存储文件路径（后续命令可省略 --file）")
+    init_parser.add_argument("file", nargs="?", help=f"默认存储文件路径（默认: {DEFAULT_INIT_STORE_PATH}）")
+    init_parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help="把当前默认存储文件迁移到目标文件（用于从 home 路径切到 git 仓库）",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="与 --migrate 一起使用，允许覆盖目标文件",
+    )
+    init_parser.set_defaults(func=command_init)
 
     return parser
 
