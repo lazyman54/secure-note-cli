@@ -120,6 +120,41 @@ export PATH="$HOME/.local/bin:$PATH"
 bash ./uninstall.sh
 ```
 
+## 跨设备同步（私有数据仓库）
+
+你当前的私有数据仓库：
+
+- `https://github.com/lazyman54/secure-note-data`
+- 本地默认目录：`~/Projects/secure-note-data`
+- 仓库内数据文件：`store.json`
+
+把本地数据推送到私有仓库：
+
+```bash
+vault sync-push
+```
+
+从私有仓库拉取到本地（覆盖本地 `~/.secure_note_store.json`）：
+
+```bash
+vault sync-pull
+```
+
+可选参数（仓库路径与提交信息）：
+
+```bash
+vault sync-push --repo ~/Projects/secure-note-data -m "sync from macbook"
+vault sync-pull --repo ~/Projects/secure-note-data
+```
+
+新电脑使用步骤：
+
+```bash
+git clone https://github.com/lazyman54/secure-note-data ~/Projects/secure-note-data
+curl -fsSL "https://raw.githubusercontent.com/lazyman54/secure-note-cli/main/install.sh" | VAULT_REPO="lazyman54/secure-note-cli" bash
+vault sync-pull
+```
+
 ## 注意事项
 
 - 同一个关键词再次 `save` 会覆盖旧值

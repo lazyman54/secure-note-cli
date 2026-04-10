@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import datetime
 import getpass
 import hashlib
 import hmac
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -13,6 +16,7 @@ from typing import Dict, Tuple, Union
 
 
 DEFAULT_STORE_PATH = Path.home() / ".secure_note_store.json"
+DEFAULT_SYNC_REPO_PATH = Path.home() / "Projects" / "secure-note-data"
 PBKDF2_ITERATIONS = 200_000
 SALT_SIZE = 16
 NONCE_SIZE = 16
@@ -149,6 +153,27 @@ def resolve_keyword(positional_keyword: str, option_keyword: str) -> str:
     if positional_keyword and option_keyword and positional_keyword != option_keyword:
         raise ValueError("位置关键词与 --keyword/-k 不一致，请只保留一种写法。")
     return positional_keyword or option_keyword or ""
+
+
+def run_command(command: list[str], cwd: Path) -> str:
+    result = subprocess.run(
+        command,
+        cwd=str(cwd),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip()
+        raise ValueError(f"命令执行失败: {' '.join(command)}\n{details}")
+    return result.stdout.strip()
+
+
+def ensure_repo_dir(path: Path) -> None:
+    if not path.exists():
+        raise ValueError(f"同步仓库目录不存在: {path}")
+    if not (path / ".git").exists():
+        raise ValueError(f"不是 git 仓库目录: {path}")
 
 
 def command_save(args: argparse.Namespace) -> int:
@@ -321,6 +346,56 @@ def command_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_sync_pull(args: argparse.Namespace) -> int:
+    repo_path = Path(args.repo).expanduser()
+    ensure_repo_dir(repo_path)
+
+    run_command(["git", "pull", "--rebase", "origin", "main"], repo_path)
+
+    repo_store = repo_path / args.store
+    if not repo_store.exists():
+        raise ValueError(f"仓库中未找到存储文件: {repo_store}")
+
+    local_store = Path(args.file).expanduser()
+    local_store.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo_store, local_store)
+    print(f"已拉取并更新本地存储文件: {local_store}")
+    return 0
+
+
+def command_sync_push(args: argparse.Namespace) -> int:
+    repo_path = Path(args.repo).expanduser()
+    ensure_repo_dir(repo_path)
+
+    local_store = Path(args.file).expanduser()
+    if not local_store.exists():
+        raise ValueError(f"本地存储文件不存在: {local_store}")
+
+    run_command(["git", "pull", "--rebase", "origin", "main"], repo_path)
+
+    repo_store = repo_path / args.store
+    repo_store.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(local_store, repo_store)
+
+    run_command(["git", "add", args.store], repo_path)
+
+    commit_needed = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=str(repo_path),
+        check=False,
+    ).returncode != 0
+
+    if commit_needed:
+        message = args.message or f"sync secure note store ({datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
+        run_command(["git", "commit", "-m", message], repo_path)
+    else:
+        print("没有检测到数据变更，跳过提交。")
+
+    run_command(["git", "push", "origin", "main"], repo_path)
+    print(f"已推送存储文件到远端私有仓库: {repo_store}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vault",
@@ -366,6 +441,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="交互输入新密码（推荐）",
     )
     update_parser.set_defaults(func=command_update)
+
+    pull_parser = subparsers.add_parser("sync-pull", help="从私有仓库拉取并更新本地存储文件")
+    pull_parser.add_argument(
+        "--repo",
+        default=str(DEFAULT_SYNC_REPO_PATH),
+        help=f"数据仓库目录（默认: {DEFAULT_SYNC_REPO_PATH}）",
+    )
+    pull_parser.add_argument("--store", default="store.json", help="仓库内存储文件相对路径（默认: store.json）")
+    pull_parser.set_defaults(func=command_sync_pull)
+
+    push_parser = subparsers.add_parser("sync-push", help="将本地存储文件推送到私有仓库")
+    push_parser.add_argument(
+        "--repo",
+        default=str(DEFAULT_SYNC_REPO_PATH),
+        help=f"数据仓库目录（默认: {DEFAULT_SYNC_REPO_PATH}）",
+    )
+    push_parser.add_argument("--store", default="store.json", help="仓库内存储文件相对路径（默认: store.json）")
+    push_parser.add_argument("-m", "--message", help="同步提交信息（可选）")
+    push_parser.set_defaults(func=command_sync_push)
 
     return parser
 
