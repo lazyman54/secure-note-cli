@@ -396,6 +396,87 @@ def command_sync_push(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_doctor(args: argparse.Namespace) -> int:
+    repo_path = Path(args.repo).expanduser()
+    local_store = Path(args.file).expanduser()
+    repo_store = repo_path / args.store
+
+    ok_count = 0
+    warn_count = 0
+    fail_count = 0
+
+    def report(status: str, message: str) -> None:
+        nonlocal ok_count, warn_count, fail_count
+        print(f"[{status}] {message}")
+        if status == "OK":
+            ok_count += 1
+        elif status == "WARN":
+            warn_count += 1
+        else:
+            fail_count += 1
+
+    report("OK", f"本地存储路径: {local_store}")
+    if local_store.exists():
+        try:
+            store_data = load_store(local_store)
+            report("OK", f"本地存储文件可读，记录数: {len(store_data)}")
+        except ValueError as exc:
+            report("FAIL", f"本地存储文件格式异常: {exc}")
+    else:
+        report("WARN", "本地存储文件不存在（首次使用可忽略）")
+
+    if repo_path.exists():
+        report("OK", f"数据仓库目录存在: {repo_path}")
+    else:
+        report("FAIL", f"数据仓库目录不存在: {repo_path}")
+
+    if repo_path.exists() and (repo_path / ".git").exists():
+        report("OK", "数据仓库是有效 git 仓库")
+    elif repo_path.exists():
+        report("FAIL", "数据仓库目录缺少 .git")
+
+    if repo_store.exists():
+        try:
+            store_data = load_store(repo_store)
+            report("OK", f"仓库存储文件可读，记录数: {len(store_data)}")
+        except ValueError as exc:
+            report("FAIL", f"仓库存储文件格式异常: {exc}")
+    else:
+        report("WARN", f"仓库存储文件不存在: {repo_store}")
+
+    if repo_path.exists() and (repo_path / ".git").exists():
+        try:
+            remote_url = run_command(["git", "remote", "get-url", "origin"], repo_path)
+            report("OK", f"远端 origin: {remote_url}")
+        except ValueError as exc:
+            report("FAIL", f"无法读取远端 origin: {exc}")
+
+        try:
+            run_command(["git", "ls-remote", "--heads", "origin", "main"], repo_path)
+            report("OK", "远端 main 分支可访问")
+        except ValueError as exc:
+            report("FAIL", f"无法访问远端 main 分支: {exc}")
+
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(repo_path),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if status_result.returncode == 0:
+            if status_result.stdout.strip():
+                report("WARN", "数据仓库有未提交变更")
+            else:
+                report("OK", "数据仓库工作区干净")
+        else:
+            details = (status_result.stderr or status_result.stdout).strip()
+            report("FAIL", f"无法检查仓库状态: {details}")
+
+    print(f"\n检查完成: OK={ok_count}, WARN={warn_count}, FAIL={fail_count}")
+    return 1 if fail_count > 0 else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vault",
@@ -460,6 +541,15 @@ def build_parser() -> argparse.ArgumentParser:
     push_parser.add_argument("--store", default="store.json", help="仓库内存储文件相对路径（默认: store.json）")
     push_parser.add_argument("-m", "--message", help="同步提交信息（可选）")
     push_parser.set_defaults(func=command_sync_push)
+
+    doctor_parser = subparsers.add_parser("doctor", help="检查本地与同步环境是否就绪")
+    doctor_parser.add_argument(
+        "--repo",
+        default=str(DEFAULT_SYNC_REPO_PATH),
+        help=f"数据仓库目录（默认: {DEFAULT_SYNC_REPO_PATH}）",
+    )
+    doctor_parser.add_argument("--store", default="store.json", help="仓库内存储文件相对路径（默认: store.json）")
+    doctor_parser.set_defaults(func=command_doctor)
 
     return parser
 

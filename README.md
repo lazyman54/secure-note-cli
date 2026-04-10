@@ -147,6 +147,20 @@ vault sync-push --repo ~/Projects/secure-note-data -m "sync from macbook"
 vault sync-pull --repo ~/Projects/secure-note-data
 ```
 
+环境自检（建议先跑一次）：
+
+```bash
+vault doctor
+```
+
+`doctor` 会检查：
+
+- 本地存储文件是否存在且格式可读
+- 私有数据仓库目录与 `.git` 是否存在
+- 仓库内 `store.json` 是否可读
+- `origin/main` 是否可访问
+- 数据仓库是否有未提交改动
+
 新电脑使用步骤：
 
 ```bash
