@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 
 DEFAULT_STORE_PATH = Path.home() / ".secure_note_store.json"
@@ -198,7 +198,7 @@ def resolve_keyword(positional_keyword: str, option_keyword: str) -> str:
     return positional_keyword or option_keyword or ""
 
 
-def run_command(command: list[str], cwd: Path) -> str:
+def run_command(command: List[str], cwd: Path) -> str:
     result = subprocess.run(
         command,
         cwd=str(cwd),
