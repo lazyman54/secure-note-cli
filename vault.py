@@ -21,6 +21,7 @@ DEFAULT_SYNC_REPO_PATH = Path.home() / "Projects" / "secure-note-data"
 DEFAULT_INIT_STORE_PATH = DEFAULT_SYNC_REPO_PATH / "store.json"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "secure-note-cli" / "config.json"
 CONFIG_ENV_KEY = "VAULT_CONFIG_FILE"
+APP_VERSION = "0.7.0"
 PBKDF2_ITERATIONS = 200_000
 SALT_SIZE = 16
 NONCE_SIZE = 16
@@ -573,55 +574,75 @@ def command_shell(args: argparse.Namespace) -> int:
     print("可用命令: list, get <keyword>, save <keyword> -u <username> [-p <password>], update <keyword> [-u <username>] [-p <password>|-pp], delete <keyword>, clear, help, quit")
 
     def clear_screen() -> None:
-        # ANSI clear screen + move cursor home.
-        print("\033[2J\033[H", end="")
+        if sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb":
+            subprocess.run(["clear"], check=False)
+            print("\033[2J\033[H", end="", flush=True)
+        else:
+            # Fallback for dumb/non-tty terminals: push old output out of view.
+            print("\n" * 120, end="", flush=True)
+
+    def resolve_keyword_input(
+        raw_keyword: str,
+        store: Dict[str, Dict[str, Union[str, int]]],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        if raw_keyword in store:
+            return raw_keyword, None
+
+        matches = sorted([k for k in store.keys() if k.startswith(raw_keyword)])
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            return None, f"关键词前缀有歧义: {', '.join(matches)}"
+        return None, f"未找到关键词: {raw_keyword}"
 
     commands = ["clear", "delete", "get", "help", "list", "quit", "save", "update"]
 
     try:
         import readline as _readline  # type: ignore
 
-        readline_module = _readline
-        old_completer = readline_module.get_completer()
-        old_delims = readline_module.get_completer_delims()
-        readline_module.parse_and_bind("tab: complete")
-        readline_module.set_completer_delims(" \t\n")
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            readline_module = _readline
+            old_completer = readline_module.get_completer()
+            old_delims = readline_module.get_completer_delims()
+            readline_module.parse_and_bind("tab: complete")
+            readline_module.parse_and_bind("set show-all-if-ambiguous on")
+            readline_module.set_completer_delims(" \t\n")
 
-        def _keyword_candidates(prefix: str) -> List[str]:
-            try:
-                store = load_store(store_path)
-            except ValueError:
-                return []
-            return sorted([k for k in store.keys() if k.startswith(prefix)])
+            def _keyword_candidates(prefix: str) -> List[str]:
+                try:
+                    store = load_store(store_path)
+                except ValueError:
+                    return []
+                return sorted([k for k in store.keys() if k.startswith(prefix)])
 
-        def _completer(text: str, state: int) -> Optional[str]:
-            line = readline_module.get_line_buffer()
-            begidx = readline_module.get_begidx()
-            left = line[:begidx]
-            parts = left.split()
-            suggestions: List[str] = []
+            def _completer(text: str, state: int) -> Optional[str]:
+                line = readline_module.get_line_buffer()
+                begidx = readline_module.get_begidx()
+                left = line[:begidx]
+                parts = left.split()
+                suggestions: List[str] = []
 
-            if not parts:
-                suggestions = [c for c in commands if c.startswith(text)]
-            elif begidx == 0:
-                suggestions = [c for c in commands if c.startswith(text)]
-            else:
-                command = parts[0]
-                if command in {"get", "delete", "update", "save"} and len(parts) == 1:
-                    suggestions = _keyword_candidates(text)
-                elif command == "save" and len(parts) >= 2:
-                    option_suggestions = ["-u", "--username", "-p", "--password"]
-                    suggestions = [opt for opt in option_suggestions if opt.startswith(text)]
-                elif command == "update" and len(parts) >= 2:
-                    option_suggestions = ["-u", "--username", "-p", "--password", "-pp", "--prompt-password"]
-                    suggestions = [opt for opt in option_suggestions if opt.startswith(text)]
+                if not parts:
+                    suggestions = [c for c in commands if c.startswith(text)]
+                elif begidx == 0:
+                    suggestions = [c for c in commands if c.startswith(text)]
+                else:
+                    command = parts[0]
+                    if command in {"get", "delete", "update", "save"} and len(parts) == 1:
+                        suggestions = _keyword_candidates(text)
+                    elif command == "save" and len(parts) >= 2:
+                        option_suggestions = ["-u", "--username", "-p", "--password"]
+                        suggestions = [opt for opt in option_suggestions if opt.startswith(text)]
+                    elif command == "update" and len(parts) >= 2:
+                        option_suggestions = ["-u", "--username", "-p", "--password", "-pp", "--prompt-password"]
+                        suggestions = [opt for opt in option_suggestions if opt.startswith(text)]
 
-            suggestions = sorted(set(suggestions))
-            if state < len(suggestions):
-                return suggestions[state]
-            return None
+                suggestions = sorted(set(suggestions))
+                if state < len(suggestions):
+                    return suggestions[state]
+                return None
 
-        readline_module.set_completer(_completer)
+            readline_module.set_completer(_completer)
     except Exception:
         readline_module = None
 
@@ -697,9 +718,9 @@ def command_shell(args: argparse.Namespace) -> int:
             if len(tokens) < 2:
                 print("用法: get <keyword>")
                 continue
-            keyword = tokens[1]
-            if keyword not in store:
-                print(f"未找到关键词: {keyword}")
+            keyword, keyword_error = resolve_keyword_input(tokens[1], store)
+            if keyword is None:
+                print(keyword_error)
                 continue
             payload = _try_decrypt_with_key(store[keyword], session_key)
             if payload is None:
@@ -737,9 +758,9 @@ def command_shell(args: argparse.Namespace) -> int:
             if len(tokens) < 2:
                 print("用法: delete <keyword>")
                 continue
-            keyword = tokens[1]
-            if keyword not in store:
-                print(f"未找到关键词: {keyword}")
+            keyword, keyword_error = resolve_keyword_input(tokens[1], store)
+            if keyword is None:
+                print(keyword_error)
                 continue
             payload = _try_decrypt_with_key(store[keyword], session_key)
             if payload is None:
@@ -766,9 +787,9 @@ def command_shell(args: argparse.Namespace) -> int:
                 print("至少提供 -u/--username 或 -p/--password 或 -pp/--prompt-password。")
                 continue
 
-            keyword = parsed.keyword
-            if keyword not in store:
-                print(f"未找到关键词: {keyword}")
+            keyword, keyword_error = resolve_keyword_input(parsed.keyword, store)
+            if keyword is None:
+                print(keyword_error)
                 continue
 
             payload = _try_decrypt_with_key(store[keyword], session_key)
@@ -807,6 +828,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--file",
         help=f"存储文件路径（优先于 init 配置；未配置时默认: {DEFAULT_STORE_PATH}）",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"vault {APP_VERSION}",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)

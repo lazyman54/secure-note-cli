@@ -22,6 +22,12 @@
 chmod +x ./vault
 ```
 
+查看版本：
+
+```bash
+vault --version
+```
+
 保存一条记录（推荐：密码交互输入，不出现在命令历史）：
 
 ```bash
@@ -96,6 +102,7 @@ vault> quit
 - 想切换密钥时，先 `quit`，再重新进入 `vault shell`
 - 输入 `quit/exit` 会自动清屏后退出；也可手动输入 `clear` 清屏
 - 会话支持 `Tab` 自动补全命令和 keyword（例如输入 `get em` 后按 `Tab` 可补全 `email`）
+- 若终端环境不支持 `Tab` 补全，也可直接输入关键词前缀（如 `get em`），唯一匹配时会自动识别为 `email`
 
 ## 存储文件
 
