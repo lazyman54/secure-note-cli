@@ -21,7 +21,7 @@ DEFAULT_SYNC_REPO_PATH = Path.home() / "Projects" / "secure-note-data"
 DEFAULT_INIT_STORE_PATH = DEFAULT_SYNC_REPO_PATH / "store.json"
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "secure-note-cli" / "config.json"
 CONFIG_ENV_KEY = "VAULT_CONFIG_FILE"
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 PBKDF2_ITERATIONS = 200_000
 SALT_SIZE = 16
 NONCE_SIZE = 16
@@ -576,7 +576,9 @@ def command_shell(args: argparse.Namespace) -> int:
     def clear_screen() -> None:
         if sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb":
             subprocess.run(["clear"], check=False)
-            print("\033[2J\033[H", end="", flush=True)
+            # Clear visible screen, move cursor home, then clear scrollback
+            # (CSI 3 J is supported by iTerm2 and many modern terminals).
+            print("\033[2J\033[H\033[3J", end="", flush=True)
         else:
             # Fallback for dumb/non-tty terminals: push old output out of view.
             print("\n" * 120, end="", flush=True)
@@ -604,7 +606,12 @@ def command_shell(args: argparse.Namespace) -> int:
             readline_module = _readline
             old_completer = readline_module.get_completer()
             old_delims = readline_module.get_completer_delims()
-            readline_module.parse_and_bind("tab: complete")
+            # Support both GNU readline and libedit bindings.
+            readline_doc = getattr(readline_module, "__doc__", "") or ""
+            if "libedit" in readline_doc.lower():
+                readline_module.parse_and_bind("bind ^I rl_complete")
+            else:
+                readline_module.parse_and_bind("tab: complete")
             readline_module.parse_and_bind("set show-all-if-ambiguous on")
             readline_module.set_completer_delims(" \t\n")
 
