@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -217,6 +218,13 @@ def ensure_repo_dir(path: Path) -> None:
         raise ValueError(f"同步仓库目录不存在: {path}")
     if not (path / ".git").exists():
         raise ValueError(f"不是 git 仓库目录: {path}")
+
+
+def _try_decrypt_with_key(record: Dict[str, Union[str, int]], key: str) -> Optional[Dict[str, str]]:
+    try:
+        return decrypt_payload(record, key)
+    except ValueError:
+        return None
 
 
 def command_save(args: argparse.Namespace) -> int:
@@ -553,6 +561,244 @@ def command_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_shell(args: argparse.Namespace) -> int:
+    store_path = resolve_store_path(args.file)
+    session_key = prompt_key(confirm=False)
+    readline_module = None
+    old_completer = None
+    old_delims = None
+
+    print(f"进入 vault 会话模式（存储文件: {store_path}）")
+    print("会话已绑定当前加密密钥。")
+    print("可用命令: list, get <keyword>, save <keyword> -u <username> [-p <password>], update <keyword> [-u <username>] [-p <password>|-pp], delete <keyword>, clear, help, quit")
+
+    def clear_screen() -> None:
+        # ANSI clear screen + move cursor home.
+        print("\033[2J\033[H", end="")
+
+    commands = ["clear", "delete", "get", "help", "list", "quit", "save", "update"]
+
+    try:
+        import readline as _readline  # type: ignore
+
+        readline_module = _readline
+        old_completer = readline_module.get_completer()
+        old_delims = readline_module.get_completer_delims()
+        readline_module.parse_and_bind("tab: complete")
+        readline_module.set_completer_delims(" \t\n")
+
+        def _keyword_candidates(prefix: str) -> List[str]:
+            try:
+                store = load_store(store_path)
+            except ValueError:
+                return []
+            return sorted([k for k in store.keys() if k.startswith(prefix)])
+
+        def _completer(text: str, state: int) -> Optional[str]:
+            line = readline_module.get_line_buffer()
+            begidx = readline_module.get_begidx()
+            left = line[:begidx]
+            parts = left.split()
+            suggestions: List[str] = []
+
+            if not parts:
+                suggestions = [c for c in commands if c.startswith(text)]
+            elif begidx == 0:
+                suggestions = [c for c in commands if c.startswith(text)]
+            else:
+                command = parts[0]
+                if command in {"get", "delete", "update", "save"} and len(parts) == 1:
+                    suggestions = _keyword_candidates(text)
+                elif command == "save" and len(parts) >= 2:
+                    option_suggestions = ["-u", "--username", "-p", "--password"]
+                    suggestions = [opt for opt in option_suggestions if opt.startswith(text)]
+                elif command == "update" and len(parts) >= 2:
+                    option_suggestions = ["-u", "--username", "-p", "--password", "-pp", "--prompt-password"]
+                    suggestions = [opt for opt in option_suggestions if opt.startswith(text)]
+
+            suggestions = sorted(set(suggestions))
+            if state < len(suggestions):
+                return suggestions[state]
+            return None
+
+        readline_module.set_completer(_completer)
+    except Exception:
+        readline_module = None
+
+    def print_list(store: Dict[str, Dict[str, Union[str, int]]]) -> None:
+        rows = []
+        for keyword in sorted(store.keys()):
+            payload = _try_decrypt_with_key(store[keyword], session_key)
+            if payload is None:
+                rows.append((keyword, "[不支持解锁]"))
+            else:
+                rows.append((keyword, payload.get("username", "")))
+
+        if not rows:
+            print(f"存储为空: {store_path}")
+            return
+
+        keyword_header = "keyword"
+        username_header = "username"
+        keyword_width = max(len(keyword_header), *(len(k) for k, _ in rows))
+        username_width = max(len(username_header), *(len(u) for _, u in rows))
+        print(f"{keyword_header:<{keyword_width}}  {username_header:<{username_width}}")
+        print(f"{'-' * keyword_width}  {'-' * username_width}")
+        for keyword, username in rows:
+            print(f"{keyword:<{keyword_width}}  {username:<{username_width}}")
+
+    while True:
+        try:
+            line = input("vault> ").strip()
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt:
+            print()
+            continue
+
+        if not line:
+            continue
+
+        try:
+            tokens = shlex.split(line)
+        except ValueError as exc:
+            print(f"命令解析失败: {exc}")
+            continue
+
+        cmd = tokens[0]
+        if cmd in {"quit", "exit"}:
+            clear_screen()
+            break
+        if cmd == "help":
+            print("list")
+            print("get <keyword>")
+            print("save <keyword> -u <username> [-p <password>]")
+            print("update <keyword> [-u <username>] [-p <password>|-pp]")
+            print("delete <keyword>")
+            print("clear")
+            print("quit")
+            continue
+        if cmd == "clear":
+            clear_screen()
+            continue
+
+        try:
+            store = load_store(store_path)
+        except ValueError as exc:
+            print(f"存储文件错误: {exc}")
+            continue
+
+        if cmd == "list":
+            print_list(store)
+            continue
+
+        if cmd == "get":
+            if len(tokens) < 2:
+                print("用法: get <keyword>")
+                continue
+            keyword = tokens[1]
+            if keyword not in store:
+                print(f"未找到关键词: {keyword}")
+                continue
+            payload = _try_decrypt_with_key(store[keyword], session_key)
+            if payload is None:
+                print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
+                continue
+            print(f"keyword: {keyword}")
+            print(f"username: {payload.get('username', '')}")
+            print(f"password: {payload.get('password', '')}")
+            continue
+
+        if cmd == "save":
+            parser = argparse.ArgumentParser(prog="save", add_help=False)
+            parser.add_argument("keyword")
+            parser.add_argument("-u", "--username", required=True)
+            parser.add_argument("-p", "--password")
+            try:
+                parsed = parser.parse_args(tokens[1:])
+            except SystemExit:
+                print("用法: save <keyword> -u <username> [-p <password>]")
+                continue
+
+            password = parsed.password if parsed.password is not None else prompt_secret("要保存的账号密码", confirm=True)
+            store[parsed.keyword] = encrypt_payload(
+                {
+                    "username": parsed.username,
+                    "password": password,
+                },
+                session_key,
+            )
+            save_store(store_path, store)
+            print(f"已保存关键词 `{parsed.keyword}`")
+            continue
+
+        if cmd == "delete":
+            if len(tokens) < 2:
+                print("用法: delete <keyword>")
+                continue
+            keyword = tokens[1]
+            if keyword not in store:
+                print(f"未找到关键词: {keyword}")
+                continue
+            payload = _try_decrypt_with_key(store[keyword], session_key)
+            if payload is None:
+                print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
+                continue
+            del store[keyword]
+            save_store(store_path, store)
+            print(f"已删除关键词 `{keyword}`")
+            continue
+
+        if cmd == "update":
+            parser = argparse.ArgumentParser(prog="update", add_help=False)
+            parser.add_argument("keyword")
+            parser.add_argument("-u", "--username")
+            parser.add_argument("-p", "--password")
+            parser.add_argument("-pp", "--prompt-password", action="store_true")
+            try:
+                parsed = parser.parse_args(tokens[1:])
+            except SystemExit:
+                print("用法: update <keyword> [-u <username>] [-p <password>|-pp]")
+                continue
+
+            if parsed.username is None and parsed.password is None and not parsed.prompt_password:
+                print("至少提供 -u/--username 或 -p/--password 或 -pp/--prompt-password。")
+                continue
+
+            keyword = parsed.keyword
+            if keyword not in store:
+                print(f"未找到关键词: {keyword}")
+                continue
+
+            payload = _try_decrypt_with_key(store[keyword], session_key)
+            if payload is None:
+                print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
+                continue
+
+            if parsed.username is not None:
+                payload["username"] = parsed.username
+            if parsed.password is not None:
+                payload["password"] = parsed.password
+            elif parsed.prompt_password:
+                payload["password"] = prompt_secret("新的账号密码", confirm=True)
+
+            store[keyword] = encrypt_payload(payload, session_key)
+            save_store(store_path, store)
+            print(f"已更新关键词 `{keyword}`")
+            continue
+
+        print(f"未知命令: {cmd}（输入 help 查看可用命令）")
+
+    if readline_module is not None:
+        readline_module.set_completer(old_completer)
+        if old_delims is not None:
+            readline_module.set_completer_delims(old_delims)
+
+    print("已退出 vault 会话。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vault",
@@ -639,6 +885,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="与 --migrate 一起使用，允许覆盖目标文件",
     )
     init_parser.set_defaults(func=command_init)
+
+    shell_parser = subparsers.add_parser("shell", help="进入交互式会话（单会话绑定单密钥）")
+    shell_parser.set_defaults(func=command_shell)
 
     return parser
 

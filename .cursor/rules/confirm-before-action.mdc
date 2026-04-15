@@ -1,0 +1,13 @@
+---
+description: Always confirm implementation plan before making changes
+alwaysApply: true
+---
+
+# Confirm Before Action
+
+- 对于功能新增、代码修改、命令执行、文件编辑或删除：
+  - 先给出简短方案（做什么、影响什么、怎么验证）。
+  - 等用户明确确认后再执行。
+- 如果用户直接说“开始改/去做/同意”等明确授权，可立即执行。
+- 若是高风险操作（删除数据、覆盖配置、批量修改），即使已有授权，也要再做一次风险提醒并确认。
+- 默认使用中文沟通，保持简洁清晰。

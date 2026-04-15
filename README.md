@@ -11,6 +11,7 @@
 - `delete`：按关键词删除一条记录
 - `update`：按关键词只更新用户名或密码（可只传一个字段）
 - `init`：设置默认存储文件路径（以后可不传 `--file`）
+- `shell`：进入交互会话（按需解锁，不同密钥分别缓存）
 - 每次执行命令都需要手动输入加密密钥
 
 ## 快速开始
@@ -70,6 +71,31 @@ chmod +x ./vault
 ./vault update github --prompt-password
 ./vault update github -pp
 ```
+
+交互会话模式（单会话绑定单密钥，输入 `quit` 退出）：
+
+```bash
+./vault shell
+```
+
+会话中可用命令示例：
+
+```text
+vault> get github
+vault> save email -u myname
+vault> update github -u new_name
+vault> delete github
+vault> clear
+vault> list
+vault> quit
+```
+
+说明：
+- 进入会话时会先输入一次加密密钥，后续 `save/get/update/delete/list` 都使用该密钥
+- 如果某条记录不是这个密钥加密，会提示“此数据在当前会话中不支持解锁”
+- 想切换密钥时，先 `quit`，再重新进入 `vault shell`
+- 输入 `quit/exit` 会自动清屏后退出；也可手动输入 `clear` 清屏
+- 会话支持 `Tab` 自动补全命令和 keyword（例如输入 `get em` 后按 `Tab` 可补全 `email`）
 
 ## 存储文件
 
