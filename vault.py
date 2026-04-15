@@ -568,6 +568,7 @@ def command_shell(args: argparse.Namespace) -> int:
     readline_module = None
     old_completer = None
     old_delims = None
+    private_screen_active = False
 
     print(f"进入 vault 会话模式（存储文件: {store_path}）")
     print("会话已绑定当前加密密钥。")
@@ -653,6 +654,14 @@ def command_shell(args: argparse.Namespace) -> int:
     except Exception:
         readline_module = None
 
+    if args.private_screen:
+        if sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb":
+            # Enter alternate screen buffer.
+            print("\033[?1049h\033[H", end="", flush=True)
+            private_screen_active = True
+        else:
+            print("提示: 当前终端不支持 private-screen，已回退为普通模式。")
+
     def print_list(store: Dict[str, Dict[str, Union[str, int]]]) -> None:
         rows = []
         for keyword in sorted(store.keys()):
@@ -675,153 +684,157 @@ def command_shell(args: argparse.Namespace) -> int:
         for keyword, username in rows:
             print(f"{keyword:<{keyword_width}}  {username:<{username_width}}")
 
-    while True:
-        try:
-            line = input("vault> ").strip()
-        except EOFError:
-            print()
-            break
-        except KeyboardInterrupt:
-            print()
-            continue
-
-        if not line:
-            continue
-
-        try:
-            tokens = shlex.split(line)
-        except ValueError as exc:
-            print(f"命令解析失败: {exc}")
-            continue
-
-        cmd = tokens[0]
-        if cmd in {"quit", "exit"}:
-            clear_screen()
-            break
-        if cmd == "help":
-            print("list")
-            print("get <keyword>")
-            print("save <keyword> -u <username> [-p <password>]")
-            print("update <keyword> [-u <username>] [-p <password>|-pp]")
-            print("delete <keyword>")
-            print("clear")
-            print("quit")
-            continue
-        if cmd == "clear":
-            clear_screen()
-            continue
-
-        try:
-            store = load_store(store_path)
-        except ValueError as exc:
-            print(f"存储文件错误: {exc}")
-            continue
-
-        if cmd == "list":
-            print_list(store)
-            continue
-
-        if cmd == "get":
-            if len(tokens) < 2:
-                print("用法: get <keyword>")
-                continue
-            keyword, keyword_error = resolve_keyword_input(tokens[1], store)
-            if keyword is None:
-                print(keyword_error)
-                continue
-            payload = _try_decrypt_with_key(store[keyword], session_key)
-            if payload is None:
-                print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
-                continue
-            print(f"keyword: {keyword}")
-            print(f"username: {payload.get('username', '')}")
-            print(f"password: {payload.get('password', '')}")
-            continue
-
-        if cmd == "save":
-            parser = argparse.ArgumentParser(prog="save", add_help=False)
-            parser.add_argument("keyword")
-            parser.add_argument("-u", "--username", required=True)
-            parser.add_argument("-p", "--password")
+    try:
+        while True:
             try:
-                parsed = parser.parse_args(tokens[1:])
-            except SystemExit:
-                print("用法: save <keyword> -u <username> [-p <password>]")
+                line = input("vault> ").strip()
+            except EOFError:
+                print()
+                break
+            except KeyboardInterrupt:
+                print()
                 continue
 
-            password = parsed.password if parsed.password is not None else prompt_secret("要保存的账号密码", confirm=True)
-            store[parsed.keyword] = encrypt_payload(
-                {
-                    "username": parsed.username,
-                    "password": password,
-                },
-                session_key,
-            )
-            save_store(store_path, store)
-            print(f"已保存关键词 `{parsed.keyword}`")
-            continue
+            if not line:
+                continue
 
-        if cmd == "delete":
-            if len(tokens) < 2:
-                print("用法: delete <keyword>")
-                continue
-            keyword, keyword_error = resolve_keyword_input(tokens[1], store)
-            if keyword is None:
-                print(keyword_error)
-                continue
-            payload = _try_decrypt_with_key(store[keyword], session_key)
-            if payload is None:
-                print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
-                continue
-            del store[keyword]
-            save_store(store_path, store)
-            print(f"已删除关键词 `{keyword}`")
-            continue
-
-        if cmd == "update":
-            parser = argparse.ArgumentParser(prog="update", add_help=False)
-            parser.add_argument("keyword")
-            parser.add_argument("-u", "--username")
-            parser.add_argument("-p", "--password")
-            parser.add_argument("-pp", "--prompt-password", action="store_true")
             try:
-                parsed = parser.parse_args(tokens[1:])
-            except SystemExit:
-                print("用法: update <keyword> [-u <username>] [-p <password>|-pp]")
+                tokens = shlex.split(line)
+            except ValueError as exc:
+                print(f"命令解析失败: {exc}")
                 continue
 
-            if parsed.username is None and parsed.password is None and not parsed.prompt_password:
-                print("至少提供 -u/--username 或 -p/--password 或 -pp/--prompt-password。")
+            cmd = tokens[0]
+            if cmd in {"quit", "exit"}:
+                clear_screen()
+                break
+            if cmd == "help":
+                print("list")
+                print("get <keyword>")
+                print("save <keyword> -u <username> [-p <password>]")
+                print("update <keyword> [-u <username>] [-p <password>|-pp]")
+                print("delete <keyword>")
+                print("clear")
+                print("quit")
+                continue
+            if cmd == "clear":
+                clear_screen()
                 continue
 
-            keyword, keyword_error = resolve_keyword_input(parsed.keyword, store)
-            if keyword is None:
-                print(keyword_error)
+            try:
+                store = load_store(store_path)
+            except ValueError as exc:
+                print(f"存储文件错误: {exc}")
                 continue
 
-            payload = _try_decrypt_with_key(store[keyword], session_key)
-            if payload is None:
-                print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
+            if cmd == "list":
+                print_list(store)
                 continue
 
-            if parsed.username is not None:
-                payload["username"] = parsed.username
-            if parsed.password is not None:
-                payload["password"] = parsed.password
-            elif parsed.prompt_password:
-                payload["password"] = prompt_secret("新的账号密码", confirm=True)
+            if cmd == "get":
+                if len(tokens) < 2:
+                    print("用法: get <keyword>")
+                    continue
+                keyword, keyword_error = resolve_keyword_input(tokens[1], store)
+                if keyword is None:
+                    print(keyword_error)
+                    continue
+                payload = _try_decrypt_with_key(store[keyword], session_key)
+                if payload is None:
+                    print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
+                    continue
+                print(f"keyword: {keyword}")
+                print(f"username: {payload.get('username', '')}")
+                print(f"password: {payload.get('password', '')}")
+                continue
 
-            store[keyword] = encrypt_payload(payload, session_key)
-            save_store(store_path, store)
-            print(f"已更新关键词 `{keyword}`")
-            continue
+            if cmd == "save":
+                parser = argparse.ArgumentParser(prog="save", add_help=False)
+                parser.add_argument("keyword")
+                parser.add_argument("-u", "--username", required=True)
+                parser.add_argument("-p", "--password")
+                try:
+                    parsed = parser.parse_args(tokens[1:])
+                except SystemExit:
+                    print("用法: save <keyword> -u <username> [-p <password>]")
+                    continue
 
-        print(f"未知命令: {cmd}（输入 help 查看可用命令）")
+                password = parsed.password if parsed.password is not None else prompt_secret("要保存的账号密码", confirm=True)
+                store[parsed.keyword] = encrypt_payload(
+                    {
+                        "username": parsed.username,
+                        "password": password,
+                    },
+                    session_key,
+                )
+                save_store(store_path, store)
+                print(f"已保存关键词 `{parsed.keyword}`")
+                continue
 
-    if readline_module is not None:
-        readline_module.set_completer(old_completer)
-        if old_delims is not None:
-            readline_module.set_completer_delims(old_delims)
+            if cmd == "delete":
+                if len(tokens) < 2:
+                    print("用法: delete <keyword>")
+                    continue
+                keyword, keyword_error = resolve_keyword_input(tokens[1], store)
+                if keyword is None:
+                    print(keyword_error)
+                    continue
+                payload = _try_decrypt_with_key(store[keyword], session_key)
+                if payload is None:
+                    print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
+                    continue
+                del store[keyword]
+                save_store(store_path, store)
+                print(f"已删除关键词 `{keyword}`")
+                continue
+
+            if cmd == "update":
+                parser = argparse.ArgumentParser(prog="update", add_help=False)
+                parser.add_argument("keyword")
+                parser.add_argument("-u", "--username")
+                parser.add_argument("-p", "--password")
+                parser.add_argument("-pp", "--prompt-password", action="store_true")
+                try:
+                    parsed = parser.parse_args(tokens[1:])
+                except SystemExit:
+                    print("用法: update <keyword> [-u <username>] [-p <password>|-pp]")
+                    continue
+
+                if parsed.username is None and parsed.password is None and not parsed.prompt_password:
+                    print("至少提供 -u/--username 或 -p/--password 或 -pp/--prompt-password。")
+                    continue
+
+                keyword, keyword_error = resolve_keyword_input(parsed.keyword, store)
+                if keyword is None:
+                    print(keyword_error)
+                    continue
+
+                payload = _try_decrypt_with_key(store[keyword], session_key)
+                if payload is None:
+                    print("此数据在当前会话中不支持解锁。请退出后使用对应密钥重新进入会话。")
+                    continue
+
+                if parsed.username is not None:
+                    payload["username"] = parsed.username
+                if parsed.password is not None:
+                    payload["password"] = parsed.password
+                elif parsed.prompt_password:
+                    payload["password"] = prompt_secret("新的账号密码", confirm=True)
+
+                store[keyword] = encrypt_payload(payload, session_key)
+                save_store(store_path, store)
+                print(f"已更新关键词 `{keyword}`")
+                continue
+
+            print(f"未知命令: {cmd}（输入 help 查看可用命令）")
+    finally:
+        if readline_module is not None:
+            readline_module.set_completer(old_completer)
+            if old_delims is not None:
+                readline_module.set_completer_delims(old_delims)
+        if private_screen_active:
+            # Leave alternate screen buffer.
+            print("\033[?1049l", end="", flush=True)
 
     print("已退出 vault 会话。")
     return 0
@@ -920,6 +933,19 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.set_defaults(func=command_init)
 
     shell_parser = subparsers.add_parser("shell", help="进入交互式会话（单会话绑定单密钥）")
+    shell_parser.add_argument(
+        "--private-screen",
+        dest="private_screen",
+        action="store_true",
+        default=True,
+        help="使用临时屏幕缓冲区（默认开启）",
+    )
+    shell_parser.add_argument(
+        "--no-private-screen",
+        dest="private_screen",
+        action="store_false",
+        help="关闭临时屏幕缓冲区",
+    )
     shell_parser.set_defaults(func=command_shell)
 
     return parser

@@ -84,6 +84,13 @@ vault --version
 ./vault shell
 ```
 
+可选：显式启用/关闭私密屏幕模式（默认开启）：
+
+```bash
+./vault shell --private-screen
+./vault shell --no-private-screen
+```
+
 会话中可用命令示例：
 
 ```text
@@ -102,6 +109,7 @@ vault> quit
 - 想切换密钥时，先 `quit`，再重新进入 `vault shell`
 - 输入 `quit/exit` 会自动清屏后退出；也可手动输入 `clear` 清屏
 - 在支持的终端中，`quit/exit` 会尝试同时清理 scrollback（如 iTerm2）
+- 默认使用 private-screen（临时屏幕缓冲区），退出后返回原屏幕，减少会话记录可见性
 - 会话支持 `Tab` 自动补全命令和 keyword（例如输入 `get em` 后按 `Tab` 可补全 `email`）
 - 若终端环境不支持 `Tab` 补全，也可直接输入关键词前缀（如 `get em`），唯一匹配时会自动识别为 `email`
 
